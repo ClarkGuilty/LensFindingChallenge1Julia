@@ -1,0 +1,5 @@
+[deps]
+AstroImages = "fe3fc30c-9b16-11e9-1c73-17dabf39f4ad"
+AstroLib = "c7932e45-9af1-51e7-9da9-f004cd3a462b"
+AstroTime = "c61b5328-d09d-5e37-a9a8-0eb41c39009c"
+FITSIO = "525bcba6-941b-5504-bd06-fd0dc1a4d2eb"
