@@ -21,7 +21,8 @@ end
     epochs::Int = 120
     device::Function = gpu
 end
-const data_dir = "Data/"
+const train_data_dir = "Data/"
+const test_data_dir = "TestData/"
 
 nobs(ds::ImageDataset) = length(ds.files)
 getobs(ds::ImageDataset, idx::Int) = return_data(AstroImage(data_dir*ds.files[idx]))
