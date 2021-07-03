@@ -7,7 +7,7 @@ end
 
 #Gets the ID from a filename.
 get_id(ss::String) = parse(Int64,(split(split(ss,"-")[2],".")[1]))
-const data_dir = "Data/"
+const data_dir = "DataTest/"
 
 #"Initializer".
 function ImageDataset(data_dir::String)
@@ -19,4 +19,4 @@ is_in_ID(n::Int64, df::ImageDataset)= Bool(n ∈ df.IDs)
 is_in_ID(n::Int64) = is_in_ID(n::Int64, data)
 
 data_df = data_df[is_in_ID.(data_df.ID),:]
-CSV.write("trainClassifications.csv", data_df)
+CSV.write("ClassificationsTest.csv", data_df)
