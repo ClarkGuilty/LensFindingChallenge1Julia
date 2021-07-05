@@ -92,6 +92,33 @@ function preprocess_labels!(labels)
 end
 od(W,F,P=0,S=1) = 1 + Int((W-F+2*P)/S)
 
+loss_f(x,y) = logitcrossentropy(f(x),y)
+using Flux: OneHotMatrix
+compare(y::OneHotMatrix, y′) = maximum(y′, dims = 1) .== maximum(y .* y′, dims = 1)
+accuracy(x, y::OneHotMatrix) = mean(compare(y, f(x)))
+
+function loss_and_accuracy(x,y)
+  ŷ = f(x)
+  logitcrossentropy(ŷ,y), mean(compare(y, ŷ))
+end
+
+function loss_and_accuracy((x,y),batchsize::Int64)
+  loss = 0; accuracy = 0; i = 0
+  dataloader = Flux.Data.DataLoader((x, y), batchsize=batchsize, shuffle=false)
+  for (a,b) in dataloader
+    a,b = gpu(a), gpu(b)
+    ŷ = f(a)
+    loss += logitcrossentropy(ŷ,b)
+    accuracy += mean(compare(b, ŷ))
+    i += 1
+    #CUDA.unsafe_free!(a)
+    a = nothing
+    b = nothing
+  end
+  #dataloader = nothing
+  loss / i, accuracy / i, i
+end
+
 #Using LASTRO architecture
 ##
 oftf(x, y) = oftype(float(x), y)
@@ -143,11 +170,14 @@ f = Chain(l1c1,l1c2,l1p1,l1b1,
 #f0 = gpu(Chain(l1c1,l1c2,l1p1,l1b1,l2c1,l2c2,l2p1,l2b1,l3c1,l3c2,l3p1,l3b1,l3b2,l4c1,l4d1,l4c2,l4b1)) # 24338
 ##
 
-first_execution = false
+first_execution = true
 if first_execution
-  opt = ADAM() 
+  opt = ADAM()
+  history_loss = []
+  history_accuracy = []
+  iterations = []
 else
-  @load "earlyModel.bson" weights opt #Comment if first execution.
+  @load "earlyModel.bson" weights opt history_loss history_accuracy iterations#Comment if first execution.
   Flux.loadparams!(f, weights) #Comment if first execution.
 end
 f = gpu(f)
@@ -156,32 +186,7 @@ parameters = Flux.params(f)
 
 ##
 
-loss_f(x,y) = logitcrossentropy(f(x),y)
-using Flux: OneHotMatrix
-compare(y::OneHotMatrix, y′) = maximum(y′, dims = 1) .== maximum(y .* y′, dims = 1)
-accuracy(x, y::OneHotMatrix,testmode=true) = mean(compare(y, testmode!(f,testmode)(x)))
 
-function loss_and_accuracy(x,y,testmode=true)
-  ŷ = testmode!(f,testmode)(x)
-  logitcrossentropy(ŷ,y), mean(compare(y, ŷ))
-end
-
-function loss_and_accuracy((x,y),batchsize::Int64)
-  loss = 0; accuracy = 0; i = 0
-  dataloader = Flux.Data.DataLoader((x, y), batchsize=batchsize, shuffle=false)
-  for (a,b) in dataloader
-    a,b = gpu(a), gpu(b)
-    ŷ = testmode!(f,true)(a)
-    loss += logitcrossentropy(ŷ,b)
-    accuracy += mean(compare(b, ŷ))
-    i += 1
-    #CUDA.unsafe_free!(a)
-    a = nothing
-    b = nothing
-  end
-  #dataloader = nothing
-  loss / i, accuracy / i, i
-end
 ##Load data
 
 #(train_images, train_labels) = getobs(trainData,1:nobs(trainData))
@@ -197,23 +202,20 @@ test_labels = preprocess_labels!(test_labels)
 #@benchmark CUDA.@sync loss_and_accuracy((test_images, test_labels), 800)
 #accuracy(train_images,train_labels)
 a,b, _ = loss_and_accuracy((test_images, test_labels), 30)
-
 ##
-
-
-
 
 ##Assumes test data is already in gpu.
 "Trains model. trainData must be an ImageDataset, testData a gpu tuple, nbatches and nepochs are number of batches and epochs respectectively, loss is the loss function, opt and parameters are the optimizer and its parameters, and accuracy is the accuracy function."
-function my_train!(trainData::ImageDataset, testData, nbatches, nepochs, loss , opt, parameters,accuracy, history_loss, history_accuracy, iterations_so_far)
+function my_train!(trainData::ImageDataset, testData, nbatches, nepochs, loss , opt, parameters,accuracy, history_loss, history_accuracy, iterations)
   batchSize = floor(Int,nobs(trainData)/nbatches)
   index(index,batch,batchSize=batchSize) = index + (batch-1)*batchSize
-  #evalcb() = @show(accuracy(images,labels))
+  i_base = 0
+  length(iterations) > 0 ? i_base = iterations[end] : nothing
   #s = ParameterSchedulers.Stateful((Exp(λ = 5e-1, γ = 0.9)))
-  #println(batchSize,"-",index(1,1),"-",index(1,nbatches))
   t_loss, t_accuracy, _ = loss_and_accuracy((testData[1],testData[2]),400)
   push!(history_accuracy, t_accuracy)
   push!(history_loss, t_loss)
+  push!(iterations, i_base)
   println("Initial state, accuracy: $t_accuracy, loss: $t_loss")
   #Serial and batchwise loading. Move to dataloaders when
   println("Training $nepochs epochs with $nbatches batches of size $batchSize.")
@@ -227,39 +229,81 @@ function my_train!(trainData::ImageDataset, testData, nbatches, nepochs, loss , 
 
       #opt.eta = ParameterSchedulers.next!(s)
       #i % 5 == 0 ? push!(history_loss, accuracy(testData[1],testData[2])) : nothing
-      if i % 100 == 0
+      if (i+(j-1)*nbatches+i_base) % 100 == 0
+        testmode!(f,true)
         t_loss, t_accuracy, _ = loss_and_accuracy((testData[1],testData[2]),400)
         push!(history_accuracy, t_accuracy)
         push!(history_loss, t_loss)
+        push!(iterations, i+i_base)
         println("Epoch $j, Batch $i, accuracy: $t_accuracy, loss: $t_loss")
-
+        trainmode!(f,true)
       end
-      trainmode!(f,true)
       g = Flux.gradient(() -> loss(train_images, train_labels), parameters)
       Flux.update!(opt, parameters, g)
       ProgressMeter.next!(p)
-      iterations_so_far = iterations_so_far + 1
     end
   end
+end
+
+function alternative_train!(trainData::ImageDataset, testData, nbatches, nepochs, loss , opt, parameters,accuracy, history_loss, history_accuracy, iterations)
+  batchSize = floor(Int,nobs(trainData)/nbatches)
+  index(index,batch,batchSize=batchSize) = index + (batch-1)*batchSize
+  i_base = 0
+  length(iterations) > 0 ? i_base = iterations[end] : nothing
+  #s = ParameterSchedulers.Stateful((Exp(λ = 5e-1, γ = 0.9)))
   t_loss, t_accuracy, _ = loss_and_accuracy((testData[1],testData[2]),400)
-  println("Test accuracy: $t_accuracy, Test loss: $t_loss.")
+  push!(history_accuracy, t_accuracy)
+  push!(history_loss, t_loss)
+  push!(iterations, i_base)
+  println("Initial state, accuracy: $t_accuracy, loss: $t_loss")
+  #Serial and batchwise loading. Move to dataloaders when
+  println("Training $nbatches batches (of size $batchSize) for $nepochs epochs each.")
+  p = Progress(nepochs*nbatches)
+  for i in 1:nbatches
+    k = index(1,i)
+    (train_images, train_labels) = getobs(trainData,k:k+batchSize)
+    train_images = preprocess_images_gpu!(train_images)
+    train_labels = preprocess_labels_gpu!(train_labels)
+    for j in 1:nepochs
+      #opt.eta = ParameterSchedulers.next!(s)
+      if Int((i-1)*nepochs+j+i_base) % 100 == 0
+        testmode!(f,true)
+        t_loss, t_accuracy, _ = loss_and_accuracy((testData[1],testData[2]),400)
+        push!(history_accuracy, t_accuracy)
+        push!(history_loss, t_loss)
+        push!(iterations, i+(j-1)*nbatches+i_base)
+        println("\nBatch $i, Epoch $j, accuracy: $t_accuracy, loss: $t_loss")
+        trainmode!(f,true)
+      end
+      g = Flux.gradient(() -> loss(train_images, train_labels), parameters)
+      Flux.update!(opt, parameters, g)
+      ProgressMeter.next!(p)
+    end
+  end
 end
 #my_train!(trainData, (test_images, test_labels), 10, 1,
 
-history_loss = []
-history_accuracy = []
-iterations = 0
-##
-my_train!(trainData, (test_images, test_labels), 100, 1,loss_f,
-    opt,parameters,accuracy,history_loss, history_accuracy,iterations)
 
+##
+alternative_train!(trainData, (test_images, test_labels), 50, 1,loss_f,
+  opt,parameters,accuracy,history_loss, history_accuracy,iterations)
+sleep(60)
+alternative_train!(trainData, (test_images, test_labels), 50, 2,loss_f,
+  opt,parameters,accuracy,history_loss, history_accuracy,iterations)
+  
 #accuracy(test_images,test_labels)
 ##
-plot(log.(history_loss[2:end]),label=:none); plot!(twinx(),history_accuracy[2:end], color = :orange, label=:none)
+
+
+plot(log.(history_loss),label=:none); plot!(twinx(),history_accuracy, color = :orange, label=:none)
 
 #f = cpu(f)
-my_train!(trainData, (test_images, test_labels), 100, 2,loss_f,
-    opt,parameters,accuracy,history_loss, history_accuracy,iterations)
 
+# my_train!(trainData, (test_images, test_labels), 50, 10,loss_f,
+#     opt,parameters,accuracy,history_loss, history_accuracy,iterations)
+
+
+
+    
 weights = collect(Flux.params(cpu(f)))
-@save "earlyModel.bson" weights opt
+@save "earlyModel.bson" weights opt history_loss history_accuracy iterations
