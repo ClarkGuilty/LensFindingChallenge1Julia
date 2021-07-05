@@ -2,6 +2,7 @@
 AstroImages = "fe3fc30c-9b16-11e9-1c73-17dabf39f4ad"
 AstroLib = "c7932e45-9af1-51e7-9da9-f004cd3a462b"
 AstroTime = "c61b5328-d09d-5e37-a9a8-0eb41c39009c"
+BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"

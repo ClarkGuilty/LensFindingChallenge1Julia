@@ -7,6 +7,7 @@ using Statistics: mean, std
 using BenchmarkTools
 using CUDA
 using ProgressMeter
+using BSON: @save, @load
 ##
 
 #Dataset struct, holds filenames, the dir_path, IDs, and classes.
@@ -124,18 +125,25 @@ l4c1 =  Conv((3, 3), 16=>32, pad=(0,0), mrelu)#7, 7, 32 -> 4608, 4640
 l4d1 = Flux.Dropout(0.5,dims=3)
 l4c2 =  Conv((3, 3), 32=>32, pad=(0,0), mrelu)#5, 5, 32 -> 9216, 9248
 l4b1 = Flux.BatchNorm(32,affine=true)        #5, 5, 32 -> 64
+l4d2 = Flux.Dropout(0.5,dims=3)
 l4 = Chain(l4c1,l4c2,l4b1)
 #
 lf0 = Flux.flatten
-lf1 = Dense(800,2) #-> 1602
-#lf2 = Dense(512,2)
+lf1 = Dense(800,512)                          #512  -> 409600, 410112
+lfd1 = Flux.Dropout(0.5,dims=1)
+lfb1 = Flux.BatchNorm(512,affine=true)        #512 -> 1026
+lf2 = Dense(512,2)
 l5 = Chain(lf0,lf1)
 
-f = gpu(Chain(l1c1,l1c2,l1p1,l1b1,l2c1,l2c2,l2p1,l2b1,l3c1,l3c2,l3p1,l3b1,l3b2,l4c1,l4d1,l4c2,l4b1,lf0,lf1)) # 27458
+f = gpu(Chain(l1c1,l1c2,l1p1,l1b1,
+              l2c1,l2c2,l2p1,l2b1,
+              l3c1,l3c2,l3p1,l3b1,l3b2,
+              l4c1,l4d1,l4c2,l4b1,l4d2,
+              lf0,lf1,lfd1,lfb1,lf2)) # 437058
 #f0 = gpu(Chain(l1c1,l1c2,l1p1,l1b1,l2c1,l2c2,l2p1,l2b1,l3c1,l3c2,l3p1,l3b1,l3b2,l4c1,l4d1,l4c2,l4b1)) # 24338
 ##
 parameters = Flux.params(f)
-loss_f(x,y) = logitcrossentropy(trainmode!(f,true)(x),y)
+loss_f(x,y) = logitcrossentropy(f(x),y)
 using Flux: OneHotMatrix
 compare(y::OneHotMatrix, y′) = maximum(y′, dims = 1) .== maximum(y .* y′, dims = 1)
 accuracy(x, y::OneHotMatrix,testmode=true) = mean(compare(y, testmode!(f,testmode)(x)))
@@ -172,11 +180,11 @@ test_images = preprocess_images!(test_images)
 train_labels = preprocess_labels_gpu!(train_labels)
 test_labels = preprocess_labels!(test_labels)
 
-test_loader = Flux.Data.DataLoader((test_images, test_labels), batchsize=60, shuffle=false)
+#test_loader = Flux.Data.DataLoader((test_images, test_labels), batchsize=60, shuffle=false)
 #@benchmark CUDA.@sync loss_and_accuracy((test_images, test_labels), 800)
-loss_and_accuracy((test_images, test_labels), 400)
 #accuracy(train_images,train_labels)
-a,b = loss_and_accuracy(test_images,test_labels,400)
+a,b, _ = loss_and_accuracy((test_images, test_labels), 30)
+
 ##
 
 
@@ -188,8 +196,12 @@ function my_train!(trainData::ImageDataset, testData, nbatches, nepochs, loss , 
   batchSize = floor(Int,nobs(trainData)/nbatches)
   index(index,batch,batchSize=batchSize) = index + (batch-1)*batchSize
   #evalcb() = @show(accuracy(images,labels))
-  s = ParameterSchedulers.Stateful((Exp(λ = 5e-1, γ = 0.9)))
+  #s = ParameterSchedulers.Stateful((Exp(λ = 5e-1, γ = 0.9)))
   #println(batchSize,"-",index(1,1),"-",index(1,nbatches))
+  t_loss, t_accuracy, _ = loss_and_accuracy((testData[1],testData[2]),400)
+  push!(history_accuracy, t_accuracy)
+  push!(history_loss, t_loss)
+  println("Initial state, accuracy: $t_accuracy, loss: $t_loss")
   #Serial and batchwise loading. Move to dataloaders when
   println("Training $nepochs epochs with $nbatches batches of size $batchSize.")
   p = Progress(nepochs*nbatches)
@@ -202,13 +214,14 @@ function my_train!(trainData::ImageDataset, testData, nbatches, nepochs, loss , 
 
       #opt.eta = ParameterSchedulers.next!(s)
       #i % 5 == 0 ? push!(history_loss, accuracy(testData[1],testData[2])) : nothing
-      if i % 10 == 0
+      if i % 100 == 0
         t_loss, t_accuracy, _ = loss_and_accuracy((testData[1],testData[2]),400)
         push!(history_accuracy, t_accuracy)
         push!(history_loss, t_loss)
         println("Epoch $j, Batch $i, accuracy: $t_accuracy, loss: $t_loss")
 
       end
+      trainmode!(f,true)
       g = Flux.gradient(() -> loss(train_images, train_labels), parameters)
       Flux.update!(opt, parameters, g)
       ProgressMeter.next!(p)
@@ -225,9 +238,12 @@ history_accuracy = []
 ##
 iterations = 0
 
-my_train!(trainData, (test_images, test_labels), 50, 2,loss_f,
+my_train!(trainData, (test_images, test_labels), 100, 4,loss_f,
           ADAM(),parameters,accuracy,history_loss, history_accuracy,iterations)
 
-accuracy(test_images,test_labels)
+#accuracy(test_images,test_labels)
 ##
-plot(history_loss,label=:none); plot!(twinx(),history_accuracy, color = :orange, label=:none)
+plot(log.(history_loss[2:end]),label=:none); plot!(twinx(),history_accuracy[2:end], color = :orange, label=:none)
+
+#f = cpu(f)
+@save "earlyModel.bson" f
