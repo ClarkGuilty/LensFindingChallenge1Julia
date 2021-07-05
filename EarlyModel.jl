@@ -135,14 +135,27 @@ lfb1 = Flux.BatchNorm(512,affine=true)        #512 -> 1026
 lf2 = Dense(512,2)
 l5 = Chain(lf0,lf1)
 
-f = gpu(Chain(l1c1,l1c2,l1p1,l1b1,
+f = Chain(l1c1,l1c2,l1p1,l1b1,
               l2c1,l2c2,l2p1,l2b1,
               l3c1,l3c2,l3p1,l3b1,l3b2,
               l4c1,l4d1,l4c2,l4b1,l4d2,
-              lf0,lf1,lfd1,lfb1,lf2)) # 437058
+              lf0,lf1,lfd1,lfb1,lf2) # 437058
 #f0 = gpu(Chain(l1c1,l1c2,l1p1,l1b1,l2c1,l2c2,l2p1,l2b1,l3c1,l3c2,l3p1,l3b1,l3b2,l4c1,l4d1,l4c2,l4b1)) # 24338
 ##
-parameters = Flux.params(f)
+
+first_execution = false
+if first_execution
+  opt = ADAM() 
+else
+  @load "earlyModel.bson" weights opt #Comment if first execution.
+  Flux.loadparams!(f, weights) #Comment if first execution.
+end
+f = gpu(f)
+parameters = Flux.params(f) 
+
+
+##
+
 loss_f(x,y) = logitcrossentropy(f(x),y)
 using Flux: OneHotMatrix
 compare(y::OneHotMatrix, y′) = maximum(y′, dims = 1) .== maximum(y .* y′, dims = 1)
@@ -172,12 +185,12 @@ end
 ##Load data
 
 #(train_images, train_labels) = getobs(trainData,1:nobs(trainData))
-(train_images, train_labels) = getobs(trainData,1:100)
+#(train_images, train_labels) = getobs(trainData,1:100)
 (test_images, test_labels) = getobs(testData,1:nobs(testData))
 
-train_images = preprocess_images_gpu!(train_images)
+#train_images = preprocess_images_gpu!(train_images)
 test_images = preprocess_images!(test_images)
-train_labels = preprocess_labels_gpu!(train_labels)
+#train_labels = preprocess_labels_gpu!(train_labels)
 test_labels = preprocess_labels!(test_labels)
 
 #test_loader = Flux.Data.DataLoader((test_images, test_labels), batchsize=60, shuffle=false)
@@ -235,15 +248,18 @@ end
 
 history_loss = []
 history_accuracy = []
-##
 iterations = 0
-
-my_train!(trainData, (test_images, test_labels), 100, 4,loss_f,
-          ADAM(),parameters,accuracy,history_loss, history_accuracy,iterations)
+##
+my_train!(trainData, (test_images, test_labels), 100, 1,loss_f,
+    opt,parameters,accuracy,history_loss, history_accuracy,iterations)
 
 #accuracy(test_images,test_labels)
 ##
 plot(log.(history_loss[2:end]),label=:none); plot!(twinx(),history_accuracy[2:end], color = :orange, label=:none)
 
 #f = cpu(f)
-@save "earlyModel.bson" f
+my_train!(trainData, (test_images, test_labels), 100, 2,loss_f,
+    opt,parameters,accuracy,history_loss, history_accuracy,iterations)
+
+weights = collect(Flux.params(cpu(f)))
+@save "earlyModel.bson" weights opt
